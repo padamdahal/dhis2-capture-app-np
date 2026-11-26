@@ -24,6 +24,8 @@
       "capture-ui/*": ["./src/core_modules/capture-ui/*"],
       "capture-core-utils": ["./src/core_modules/capture-core-utils"],
       "capture-core-utils/*": ["./src/core_modules/capture-core-utils/*"],
+      "capture-nepal": ["./src/nepal"],
+      "capture-nepal/*": ["./src/nepal/*"],
       "@dhis2/rules-engine-javascript": ["./packages/rules-engine/src"]
     }
   },

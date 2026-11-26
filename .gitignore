@@ -40,3 +40,8 @@ src/locales/
 # Cursor
 .cursorrules
 .cursor
+
+# Nepal upstream sync & overlay caches
+.nepal-cache/
+.nepal-workspace/
+dist/

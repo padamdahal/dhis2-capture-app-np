@@ -1,0 +1,87 @@
+name: Release Capture NP (DHIS2 ZIP)
+
+on:
+  push:
+    tags:
+      - 'v*-np*'
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Upstream dhis2/capture-app tag (defaults to nepal/branding.json upstreamBaseTag)'
+        required: false
+        default: ''
+      release_tag:
+        description: 'Optional GitHub Release tag (e.g. v107.9.3-np.1). Leave blank to build artifact only.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Nepal overlay repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Resolve upstream DHIS2 Capture tag
+        id: upstream
+        run: |
+          TAG="${{ inputs.upstream_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="$(node -p "require('./nepal/branding.json').upstreamBaseTag")"
+          fi
+          REPO="$(node -p "require('./nepal/branding.json').upstreamRepo")"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache upstream Capture base clone & node_modules
+        uses: actions/cache@v4
+        with:
+          path: .nepal-cache/upstream-base
+          key: ${{ runner.os }}-capture-base-${{ steps.upstream.outputs.tag }}
+          restore-keys: |
+            ${{ runner.os }}-capture-base-
+
+      - name: Install Nepal overlay tooling
+        run: npm install --no-audit --no-fund
+
+      - name: Apply Nepal overlay on upstream tag, build Capture NP ZIP & verify
+        run: npm run build:full -- --repo "${{ steps.upstream.outputs.repo }}" --tag "${{ steps.upstream.outputs.tag }}"
+
+      - name: Compute checksum & artifact metadata
+        id: bundle
+        run: |
+          ZIP_FILE="$(ls dist/capture-app-np-*.zip | head -n 1)"
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "Expected ZIP not found in dist/"
+            exit 1
+          fi
+          sha256sum "$ZIP_FILE" > "${ZIP_FILE}.sha256"
+          echo "zip_file=${ZIP_FILE}" >> "$GITHUB_OUTPUT"
+          echo "sha_file=${ZIP_FILE}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload DHIS2 Capture NP ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: capture-app-np-bundle
+          path: |
+            ${{ steps.bundle.outputs.zip_file }}
+            ${{ steps.bundle.outputs.sha_file }}
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+          name: Capture NP ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.bundle.outputs.zip_file }}
+            ${{ steps.bundle.outputs.sha_file }}

@@ -1,0 +1,80 @@
+name: Release Capture NP (DHIS2 ZIP)
+
+on:
+  push:
+    tags:
+      - 'v*-np*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional release tag (e.g. v107.9.3-np.1). Leave blank to build artifact only.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply Nepal branding & identity
+        run: npm run nepal:brand
+
+      - name: Verify Nepal integration hooks & calendar roundtrips
+        run: npm run nepal:verify
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Build DHIS2 Capture NP ZIP bundle
+        run: npm run build:zip
+
+      - name: Verify built ZIP bundle (manifest, translations, icon)
+        run: node nepal/scripts/verifyIntegration.mjs --zip
+
+      - name: Compute ZIP filename and SHA-256 checksum
+        id: bundle
+        run: |
+          APP_NAME="$(node -p "require('./package.json').name")"
+          APP_VERSION="$(node -p "require('./package.json').version")"
+          ZIP_FILE="build/bundle/${APP_NAME}-${APP_VERSION}.zip"
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "Expected ZIP not found: $ZIP_FILE"
+            exit 1
+          fi
+          sha256sum "$ZIP_FILE" > "${ZIP_FILE}.sha256"
+          echo "zip_file=${ZIP_FILE}" >> "$GITHUB_OUTPUT"
+          echo "sha_file=${ZIP_FILE}.sha256" >> "$GITHUB_OUTPUT"
+          echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: capture-app-np-${{ steps.bundle.outputs.app_version }}
+          path: |
+            ${{ steps.bundle.outputs.zip_file }}
+            ${{ steps.bundle.outputs.sha_file }}
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+          name: Capture NP ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.bundle.outputs.zip_file }}
+            ${{ steps.bundle.outputs.sha_file }}

@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Overlay staging & cached upstream Capture clones
+.nepal-workspace/
+.nepal-cache/
+
+# Generated bundles & build output
+dist/
+build/
+
+# OS & logs
+.DS_Store
+*.log
+npm-debug.log*

@@ -1,6 +1,6 @@
 import React from 'react';
 import { CalendarInput } from '@dhis2/ui';
-import { NepaliDateSubField } from './NepaliDateSubField.component';
+import { NepalDateAddonBridge } from 'capture-nepal/runtime/extensionHost';
 import type { Props, State, Validation, ValidationOptions } from './Date.types';
 
 export class DateField extends React.Component<Props, State> {
@@ -45,7 +45,7 @@ export class DateField extends React.Component<Props, State> {
         const calculatedCalendarWidth = calendarWidth || width;
         const calendar = (calendarType || 'gregory') as any;
         const format = (dateFormat || 'YYYY-MM-DD') as any;
-        const showNepaliSubField = !hideNepaliPicker && (calendar === 'gregory' || calendar === 'iso8601');
+        const showNepaliAddon = !hideNepaliPicker && (calendar === 'gregory' || calendar === 'iso8601');
         const errorProps = validation || (innerMessage && innerMessage.messageType === 'error'
             ? { error: !!innerMessage.message?.dateInnerErrorMessage,
                 validationText: innerMessage.message?.dateInnerErrorMessage }
@@ -60,7 +60,7 @@ export class DateField extends React.Component<Props, State> {
                 calendar={calendar}
                 date={value}
                 width={String(calculatedCalendarWidth)}
-                inputWidth={showNepaliSubField ? '100%' : String(calculatedInputWidth)}
+                inputWidth={showNepaliAddon ? '100%' : String(calculatedInputWidth)}
                 onFocus={this.props.onFocus}
                 disabled={!!this.props.disabled}
                 locale={locale}
@@ -69,9 +69,9 @@ export class DateField extends React.Component<Props, State> {
             />
         );
 
-        if (showNepaliSubField) {
+        if (showNepaliAddon) {
             return (
-                <NepaliDateSubField
+                <NepalDateAddonBridge
                     adValue={typeof value === 'string' ? value : null}
                     dateFormat={format}
                     disabled={!!this.props.disabled}
@@ -82,7 +82,7 @@ export class DateField extends React.Component<Props, State> {
                     onDateSelectedFromCalendar={this.props.onDateSelectedFromCalendar}
                 >
                     {calendarInputElement}
-                </NepaliDateSubField>
+                </NepalDateAddonBridge>
             );
         }
 

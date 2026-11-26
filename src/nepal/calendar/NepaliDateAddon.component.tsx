@@ -25,17 +25,21 @@ import {
     isBsDayAfterMax,
     parseAndConvertBsInput,
     type SupportedDateFormat,
-} from '../../utils/nepaliDate';
-import type { ValidationOptions } from './Date.types';
+} from './nepaliDate';
 
-type Props = {
+export type NepaliValidationOptions = {
+    error?: string | null;
+    errorCode?: string | null;
+};
+
+export type NepaliDateAddonProps = {
     adValue?: string | null;
     dateFormat?: SupportedDateFormat | null;
     disabled?: boolean | null;
     calendarMax?: string | null;
     width?: string | number;
     maxWidth?: string | number | null;
-    onSelectAdDate: (adValue: string | null, validationOptions: ValidationOptions) => void;
+    onSelectAdDate: (adValue: string | null, validationOptions: NepaliValidationOptions) => void;
     onDateSelectedFromCalendar?: () => void;
     children: React.ReactNode;
 };
@@ -64,7 +68,7 @@ const popperModifiers: Array<{
     },
 ];
 
-export const NepaliDateSubField: React.FC<Props> = ({
+export const NepaliDateAddon: React.FC<NepaliDateAddonProps> = ({
     adValue,
     dateFormat,
     disabled,

@@ -1,0 +1,22 @@
+{
+  "name": "capture-app-np-overlay",
+  "version": "1.0.0",
+  "private": true,
+  "license": "BSD-3-Clause",
+  "description": "Tiny Nepal-only overlay repository for DHIS2 Capture NP (BS calendar, custom branding, DHIS2 2.41+ update check, ~2s fast rebuilds)",
+  "scripts": {
+    "check-updates": "node nepal/scripts/syncUpstream.mjs --check",
+    "overlay": "node nepal/scripts/applyOverlayToBase.mjs",
+    "build:full": "node nepal/scripts/applyOverlayToBase.mjs --build-full",
+    "build:fast": "node nepal/scripts/applyOverlayToBase.mjs --build-fast",
+    "build:ext": "node nepal/scripts/buildExtension.mjs --out dist"
+  },
+  "dependencies": {
+    "nepali-date-converter": "^3.4.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.2"
+  }
+}

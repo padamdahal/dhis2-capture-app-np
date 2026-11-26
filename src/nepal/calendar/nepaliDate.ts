@@ -75,7 +75,6 @@ export const parseFormattedDateParts = (
     const trimmed = raw.trim().replace(/\//g, '-');
     if (!trimmed) return null;
 
-    // Handle ISO timestamps like 2026-11-18T00:00:00.000
     const isoPrefix = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/);
     if (isoPrefix && (dateFormat === 'YYYY-MM-DD' || trimmed.includes('T'))) {
         return {
@@ -94,7 +93,6 @@ export const parseFormattedDateParts = (
                 day: Number(dmy[1]),
             };
         }
-        // Fallback if caller passed ISO YYYY-MM-DD directly
         if (isoPrefix) {
             return {
                 year: Number(isoPrefix[1]),
@@ -308,20 +306,20 @@ export const parseAndConvertBsInput = (
 
 export const getTodayBsParts = (dateFormat: SupportedDateFormat = 'YYYY-MM-DD'): BsDateParts => {
     const todayIso = formatJsDateToAdIso(new Date());
-    return adStringToBsParts(todayIso, 'YYYY-MM-DD')
-        ? {
-            ...(adStringToBsParts(todayIso, dateFormat) as BsDateParts),
-        }
-        : {
-            year: 2083,
-            month: 8,
-            day: 2,
-            weekday: 3,
-            monthName: 'Mangsir',
-            iso: '2083-08-02',
-            formatted: formatDateParts(2083, 8, 2, dateFormat),
-            readable: '2 Mangsir 2083',
-        };
+    const todayBs = adStringToBsParts(todayIso, dateFormat);
+    if (todayBs) {
+        return todayBs;
+    }
+    return {
+        year: 2083,
+        month: 8,
+        day: 2,
+        weekday: 3,
+        monthName: 'Mangsir',
+        iso: '2083-08-02',
+        formatted: formatDateParts(2083, 8, 2, dateFormat),
+        readable: '2 Mangsir 2083',
+    };
 };
 
 export const isBsDayAfterMax = (

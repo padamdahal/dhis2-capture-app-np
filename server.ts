@@ -65,7 +65,8 @@ function rewriteSetCookie(rawCookie: string, isHttps: boolean): string {
                 !lower.startsWith('domain=') &&
                 !lower.startsWith('path=') &&
                 !lower.startsWith('samesite=') &&
-                lower !== 'secure'
+                lower !== 'secure' &&
+                lower !== 'partitioned'
             );
         });
 
@@ -73,10 +74,130 @@ function rewriteSetCookie(rawCookie: string, isHttps: boolean): string {
     if (isHttps) {
         parts.push('SameSite=None');
         parts.push('Secure');
+        parts.push('Partitioned');
     } else {
         parts.push('SameSite=Lax');
     }
     return parts.join('; ');
+}
+
+interface ProxySessionEntry {
+    cookies: Map<string, string>;
+    updatedAt: number;
+}
+
+const proxySessionJar = new Map<string, ProxySessionEntry>();
+const SESSION_TTL_MS = 1000 * 60 * 60 * 12; // 12 hours
+
+function pruneExpiredSessions(): void {
+    if (proxySessionJar.size < 200) return;
+    const now = Date.now();
+    for (const [key, entry] of proxySessionJar.entries()) {
+        if (now - entry.updatedAt > SESSION_TTL_MS) {
+            proxySessionJar.delete(key);
+        }
+    }
+}
+
+function getSessionKey(sessionId: string, baseUrl: string): string {
+    return `${sessionId}::${baseUrl.toLowerCase()}`;
+}
+
+function parseCookieHeader(cookieHeader: string | undefined): Map<string, string> {
+    const map = new Map<string, string>();
+    if (!cookieHeader) return map;
+    for (const part of cookieHeader.split(';')) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        const eq = trimmed.indexOf('=');
+        if (eq <= 0) continue;
+        const name = trimmed.slice(0, eq).trim();
+        const value = trimmed.slice(eq + 1).trim();
+        if (name && name !== 'dhis2_proxy_target') {
+            map.set(name, value);
+        }
+    }
+    return map;
+}
+
+function applySetCookiesToJar(sessionKey: string, setCookies: string[]): void {
+    if (!sessionKey || setCookies.length === 0) return;
+    pruneExpiredSessions();
+    let entry = proxySessionJar.get(sessionKey);
+    if (!entry) {
+        entry = { cookies: new Map(), updatedAt: Date.now() };
+        proxySessionJar.set(sessionKey, entry);
+    }
+    entry.updatedAt = Date.now();
+
+    for (const raw of setCookies) {
+        const segments = raw.split(';').map(s => s.trim()).filter(Boolean);
+        if (segments.length === 0) continue;
+        const eq = segments[0].indexOf('=');
+        if (eq <= 0) continue;
+        const name = segments[0].slice(0, eq).trim();
+        const value = segments[0].slice(eq + 1).trim();
+        if (!name) continue;
+
+        let expired = value === '';
+        for (let i = 1; i < segments.length; i += 1) {
+            const lower = segments[i].toLowerCase();
+            if (lower.startsWith('max-age=')) {
+                const maxAge = Number(lower.slice('max-age='.length));
+                if (Number.isFinite(maxAge) && maxAge <= 0) expired = true;
+            } else if (lower.startsWith('expires=')) {
+                const ts = Date.parse(segments[i].slice('expires='.length));
+                if (Number.isFinite(ts) && ts <= Date.now()) expired = true;
+            }
+        }
+
+        if (expired) {
+            entry.cookies.delete(name);
+        } else {
+            entry.cookies.set(name, value);
+        }
+    }
+}
+
+function buildOutgoingCookieHeader(
+    sessionKey: string,
+    browserCookieHeader: string | undefined,
+): string {
+    const merged = new Map<string, string>();
+    const browserCookies = parseCookieHeader(browserCookieHeader);
+    for (const [k, v] of browserCookies.entries()) {
+        merged.set(k, v);
+    }
+    if (sessionKey) {
+        const entry = proxySessionJar.get(sessionKey);
+        if (entry) {
+            entry.updatedAt = Date.now();
+            // Prefer server-tracked session cookies (stays authoritative when iframe cookies are blocked or stale)
+            for (const [k, v] of entry.cookies.entries()) {
+                merged.set(k, v);
+            }
+        }
+    }
+    if (merged.size === 0) return '';
+    return Array.from(merged.entries())
+        .map(([k, v]) => `${k}=${v}`)
+        .join('; ');
+}
+
+function resolveSameServerRedirect(location: string, currentUrl: string, parsedBase: URL): string | null {
+    try {
+        const nextUrl = new URL(location, currentUrl);
+        if (nextUrl.hostname.toLowerCase() !== parsedBase.hostname.toLowerCase()) {
+            return null;
+        }
+        // Preserve upstream protocol when TLS-terminating reverse proxies emit http:// for https:// hosts
+        if (parsedBase.protocol === 'https:' && nextUrl.protocol === 'http:' && !nextUrl.port) {
+            nextUrl.protocol = 'https:';
+        }
+        return nextUrl.toString();
+    } catch {
+        return null;
+    }
 }
 
 function readRawBody(req: Request): Promise<Buffer | undefined> {
@@ -208,16 +329,57 @@ async function startServer(): Promise<void> {
         res.json({ ok: true, service: 'capture-app-np-proxy' });
     });
 
-    app.get('/api/download/capture-app-np-107.9.3.zip', (_req: Request, res: Response) => {
+    const serveBundleZip = (res: Response, requestedFilename?: string) => {
         const bundleDir = path.resolve(__dirname, 'build', 'bundle');
-        const zipPath = path.join(bundleDir, 'capture-app-np-107.9.3.zip');
+        let pkgVersion = '107.9.3';
+        let pkgName = 'capture-app-np';
+        try {
+            const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+            pkgVersion = String(pkgJson.version || pkgVersion);
+            pkgName = String(pkgJson.name || pkgName);
+        } catch {
+            // fall back to defaults
+        }
+        const defaultFilename = `${pkgName}-${pkgVersion}.zip`;
+        const safeFilename = requestedFilename && /^capture-app-np-[0-9A-Za-z._-]+\.zip$/.test(requestedFilename)
+            ? requestedFilename
+            : defaultFilename;
+        const targetPath = path.join(bundleDir, safeFilename);
+        const fallbackPath = path.join(bundleDir, defaultFilename);
+        const zipPath = fs.existsSync(targetPath) ? targetPath : fallbackPath;
+        const downloadName = path.basename(zipPath);
+
         if (!fs.existsSync(zipPath)) {
             res.status(404).json({ error: 'Bundle zip not found. Run npm run build:zip first.' });
             return;
         }
         res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Content-Disposition', 'attachment; filename="capture-app-np-107.9.3.zip"');
+        res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
         res.sendFile(zipPath);
+    };
+
+    app.get('/api/download/capture-app-np-overlay-repo.zip', (_req: Request, res: Response) => {
+        const zipPath = path.resolve(__dirname, 'build', 'bundle', 'capture-app-np-overlay-repo.zip');
+        if (!fs.existsSync(zipPath)) {
+            res.status(404).json({ error: 'Overlay starter repo ZIP not found. Run npm run nepal:export-repo first.' });
+            return;
+        }
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', 'attachment; filename="capture-app-np-overlay-repo.zip"');
+        res.sendFile(zipPath);
+    });
+
+    app.get('/api/download/capture-app-np-latest.zip', (_req: Request, res: Response) => {
+        serveBundleZip(res);
+    });
+
+    app.get('/api/download/:filename', (req: Request, res: Response) => {
+        const { filename } = req.params;
+        if (!/^capture-app-np-[0-9A-Za-z._-]+\.zip$/.test(filename)) {
+            res.status(404).json({ error: 'File not found.' });
+            return;
+        }
+        serveBundleZip(res, filename);
     });
 
     app.use('/_dhis2_proxy', async (req: Request, res: Response) => {
@@ -250,10 +412,21 @@ async function startServer(): Promise<void> {
             return;
         }
 
-        const suffix = req.originalUrl.replace(/^\/_dhis2_proxy/, '') || '/';
-        const targetUrl = `${rawBaseUrl}${suffix.startsWith('/') ? suffix : `/${suffix}`}`;
+        const rawSessionHeader = typeof req.headers['x-dhis2-session'] === 'string'
+            ? req.headers['x-dhis2-session'].trim()
+            : '';
+        const sessionId = rawSessionHeader || `srv_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+        const sessionKey = getSessionKey(sessionId, rawBaseUrl);
 
-        const forwardHeaders: Record<string, string> = {};
+        const rawSuffix = req.originalUrl.replace(/^\/_dhis2_proxy/, '') || '/';
+        const normalizedSuffix = `/${rawSuffix.replace(/^\/+/, '')}`;
+        const initialTargetUrl = `${rawBaseUrl}${normalizedSuffix}`;
+
+        if (normalizedSuffix.includes('logout.action') || normalizedSuffix.startsWith('/api/auth/logout')) {
+            proxySessionJar.delete(sessionKey);
+        }
+
+        const baseForwardHeaders: Record<string, string> = {};
         for (const [key, val] of Object.entries(req.headers)) {
             if (!val) continue;
             const lower = key.toLowerCase();
@@ -264,18 +437,13 @@ async function startServer(): Promise<void> {
                 lower === 'origin' ||
                 lower === 'referer' ||
                 lower === 'x-dhis2-target' ||
-                lower === 'accept-encoding'
+                lower === 'x-dhis2-session' ||
+                lower === 'accept-encoding' ||
+                lower === 'cookie'
             ) {
                 continue;
             }
-            if (lower === 'cookie') {
-                const cleaned = filterOutgoingCookies(Array.isArray(val) ? val.join('; ') : val);
-                if (cleaned) {
-                    forwardHeaders.cookie = cleaned;
-                }
-                continue;
-            }
-            forwardHeaders[key] = Array.isArray(val) ? val.join(', ') : val;
+            baseForwardHeaders[key] = Array.isArray(val) ? val.join(', ') : val;
         }
 
         const controller = new AbortController();
@@ -283,23 +451,84 @@ async function startServer(): Promise<void> {
 
         try {
             const bodyBuffer = await readRawBody(req);
-            const upstream = await fetch(targetUrl, {
-                method: req.method,
-                headers: forwardHeaders,
-                body: bodyBuffer ? new Uint8Array(bodyBuffer) : undefined,
-                redirect: 'manual',
-                signal: controller.signal,
-            });
+            const allSetCookies: string[] = [];
+            let currentUrl = initialTargetUrl;
+            let currentMethod = req.method;
+            let currentBody: Uint8Array | undefined = bodyBuffer ? new Uint8Array(bodyBuffer) : undefined;
+            let upstream: globalThis.Response | null = null;
+            const maxRedirects = 5;
+
+            for (let hop = 0; hop <= maxRedirects; hop += 1) {
+                const hopHeaders: Record<string, string> = { ...baseForwardHeaders };
+                const outgoingCookies = buildOutgoingCookieHeader(
+                    sessionKey,
+                    typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined,
+                );
+                if (outgoingCookies) {
+                    hopHeaders.cookie = outgoingCookies;
+                }
+                if (currentMethod === 'GET' || currentMethod === 'HEAD') {
+                    delete hopHeaders['content-type'];
+                    delete hopHeaders['Content-Type'];
+                }
+
+                upstream = await fetch(currentUrl, {
+                    method: currentMethod,
+                    headers: hopHeaders,
+                    body: currentBody,
+                    redirect: 'manual',
+                    signal: controller.signal,
+                });
+
+                const headersWithCookies = upstream.headers as unknown as {
+                    getSetCookie?: () => string[];
+                };
+                const hopCookies = typeof headersWithCookies.getSetCookie === 'function'
+                    ? headersWithCookies.getSetCookie()
+                    : [];
+                if (hopCookies.length > 0) {
+                    allSetCookies.push(...hopCookies);
+                    applySetCookiesToJar(sessionKey, hopCookies);
+                }
+
+                const isRedirect =
+                    upstream.status === 301 ||
+                    upstream.status === 302 ||
+                    upstream.status === 303 ||
+                    upstream.status === 307 ||
+                    upstream.status === 308;
+                const location = upstream.headers.get('location');
+
+                if (isRedirect && location && hop < maxRedirects) {
+                    const nextUrl = resolveSameServerRedirect(location, currentUrl, parsedBase);
+                    if (nextUrl) {
+                        // Drain redirect response body to free socket
+                        try {
+                            await upstream.arrayBuffer();
+                        } catch {
+                            // ignore
+                        }
+                        currentUrl = nextUrl;
+                        if (upstream.status === 301 || upstream.status === 302 || upstream.status === 303) {
+                            currentMethod = 'GET';
+                            currentBody = undefined;
+                        }
+                        continue;
+                    }
+                }
+                break;
+            }
+
+            if (!upstream) {
+                res.status(502).json({ error: 'No response received from DHIS2 server.' });
+                return;
+            }
 
             res.status(upstream.status);
+            res.setHeader('x-dhis2-session', sessionId);
+            res.setHeader('access-control-expose-headers', 'x-dhis2-session');
 
             const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
-            const headersWithCookies = upstream.headers as unknown as {
-                getSetCookie?: () => string[];
-            };
-            const setCookies = typeof headersWithCookies.getSetCookie === 'function'
-                ? headersWithCookies.getSetCookie()
-                : [];
 
             upstream.headers.forEach((value, key) => {
                 const lower = key.toLowerCase();
@@ -309,22 +538,28 @@ async function startServer(): Promise<void> {
                     lower === 'content-length' ||
                     lower === 'transfer-encoding' ||
                     lower === 'access-control-allow-origin' ||
-                    lower === 'access-control-allow-credentials'
+                    lower === 'access-control-allow-credentials' ||
+                    lower === 'content-security-policy' ||
+                    lower === 'x-frame-options' ||
+                    lower === 'strict-transport-security'
                 ) {
                     return;
                 }
-                if (lower === 'location' && value.startsWith(rawBaseUrl)) {
-                    const rel = value.slice(rawBaseUrl.length) || '/';
-                    res.setHeader('location', `/_dhis2_proxy${rel.startsWith('/') ? rel : `/${rel}`}`);
-                    return;
+                if (lower === 'location') {
+                    const nextSameHost = resolveSameServerRedirect(value, currentUrl, parsedBase);
+                    if (nextSameHost && nextSameHost.startsWith(rawBaseUrl)) {
+                        const rel = nextSameHost.slice(rawBaseUrl.length) || '/';
+                        res.setHeader('location', `/_dhis2_proxy/${rel.replace(/^\/+/, '')}`);
+                        return;
+                    }
                 }
                 res.setHeader(key, value);
             });
 
-            if (setCookies.length > 0) {
+            if (allSetCookies.length > 0) {
                 res.setHeader(
                     'set-cookie',
-                    setCookies.map(c => rewriteSetCookie(c, isHttps)),
+                    allSetCookies.map(c => rewriteSetCookie(c, isHttps)),
                 );
             }
 

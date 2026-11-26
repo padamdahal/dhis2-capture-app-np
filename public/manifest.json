@@ -1,20 +1,20 @@
 {
-    "short_name": "Capture NP",
-    "name": "Capture NP",
-    "icons": [
-      {
-        "src": "dhis2-app-icon.png",
-        "sizes": "125x125",
-        "type": "image/png"
-      },
-      {
-        "src": "favicon.ico",
-        "sizes": "48x48",
-        "type": "image/x-icon"
-      }
-    ],
-    "start_url": "./index.html",
-    "display": "standalone",
-    "theme_color": "#000000",
-    "background_color": "#ffffff"
-  }
+  "short_name": "Capture NP",
+  "name": "Capture NP",
+  "icons": [
+    {
+      "src": "dhis2-app-icon.png",
+      "sizes": "125x125",
+      "type": "image/png"
+    },
+    {
+      "src": "favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ],
+  "start_url": "./index.html",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
+}
